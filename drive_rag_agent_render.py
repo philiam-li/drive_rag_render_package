@@ -460,6 +460,8 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from starlette.responses import Response
+from dateutil.parser import parse as parse_date
+from datetime import datetime, timedelta, timezone
 
 import google.generativeai as genai
 
@@ -490,14 +492,16 @@ def get_folder_id_by_name(folder_name):
     return items[0]["id"] if items else None
 
 def list_new_files_in_folder(folder_id, minutes=3):
-    now = datetime.utcnow()
-    cutoff = now - timedelta(minutes=minutes)
+    """取得最近 N 分鐘內上傳的新檔案"""
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     results = drive_service.files().list(
-        q=f"'{folder_id}' in parents",
-        fields="files(id, name, createdTime, mimeType)",
+        q=f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document' or mimeType='text/plain')",
+        fields="files(id, name, mimeType, createdTime)"
     ).execute()
+    files = results.get("files", [])
+    
     return [
-        f for f in results.get("files", [])
+        f for f in files
         if parse_date(f["createdTime"]) > cutoff
     ]
 
