@@ -2,6 +2,7 @@ import os
 import io
 import fitz  # PyMuPDF
 import docx
+import json
 from fastapi import FastAPI
 from docx import Document
 from docx.shared import Pt
@@ -13,7 +14,8 @@ import google.generativeai as genai
 app = FastAPI()
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
+# GOOGLE_SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
+SERVICE_ACCOUNT_INFO = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
 INPUT_FOLDER_NAME = "spec-inbox"
 OUTPUT_FOLDER_NAME = "spec-outbox"
 TEMP_FOLDER = "temp"
@@ -21,10 +23,12 @@ TEMP_FOLDER = "temp"
 genai.configure(api_key=GEMINI_API_KEY)
 gemini = genai.GenerativeModel("gemini-2.0-flash")
 
+
 SCOPES = ["https://www.googleapis.com/auth/drive"]
-credentials = service_account.Credentials.from_service_account_file(
-    GOOGLE_SERVICE_ACCOUNT_FILE, scopes=SCOPES
+credentials = service_account.Credentials.from_service_account_info(
+    SERVICE_ACCOUNT_INFO, scopes=SCOPES
 )
+
 drive_service = build("drive", "v3", credentials=credentials)
 
 def get_folder_id_by_name(folder_name):
