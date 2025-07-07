@@ -1,5 +1,7 @@
 fastapi
 uvicorn
+requests
+line-bot-sdk
 google-api-python-client
 google-auth
 google-auth-httplib2

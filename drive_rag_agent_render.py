@@ -451,6 +451,7 @@ import io
 import fitz  # PyMuPDF
 import docx
 import json
+import requests
 from datetime import datetime, timedelta
 from dateutil.parser import parse as parse_date  # pip install python-dateutil
 from fastapi import FastAPI, Request
@@ -462,10 +463,9 @@ from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from starlette.responses import Response
 from dateutil.parser import parse as parse_date
 from datetime import datetime, timedelta, timezone
-
+from linebot import LineBotApi
+from linebot.models import TextSendMessage
 import google.generativeai as genai
-
-app = FastAPI()
 
 # ✅ 環境變數
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -543,21 +543,43 @@ def extract_text_from_file(file_path):
     print("⚠️ 不支援的檔案格式：", file_path)
     return ""
 
-def analyze_text_with_gemini(text):
+def analyze_text_with_gemini(text, chunk_size=8000):
     if not text.strip():
         return "⚠️ 無法從文件中擷取任何內容，請確認格式或重新上傳。"
-    prompt = f"""
-你是一位專業的系統分析師。請根據以下規格文件，提出其中潛在的風險條款或需進一步釐清的點，並用條列式中文回答：
 
----
-{text[:10000]}
----
+    chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+    print(f"📚 總共分成 {len(chunks)} 段，每段 {chunk_size} 字")
 
-請用繁體中文簡潔明確列出「風險」、「建議」與「需補充的資訊」。
-"""
-    print("📄 傳送給 Gemini 的 Prompt:\n", prompt[:300], "...\n")
-    response = gemini.generate_content(prompt)
-    return response.text.strip()
+    full_response = []
+    for i, chunk in enumerate(chunks, 1):
+        prompt = f"""你是一位資深系統分析師，請針對以下規格文件片段進行風險審查：
+        --- 第 {i} 段 ---{chunk}---
+        請條列三類事項（繁體中文）：
+        1. 🔺 潛在風險
+        2. 💡 建議調整
+        3. ❓ 需補充釐清
+        """
+        print(f"🧠 分析第 {i} 段...")
+        try:
+            result = gemini.generate_content(prompt)
+            full_response.append(f"📍 第 {i} 段分析：\n{result.text.strip()}\n")
+        except Exception as e:
+            full_response.append(f"❌ 第 {i} 段錯誤：{e}\n")
+
+    return "\n\n".join(full_response)
+
+
+
+line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+LINE_USER_ID = os.getenv("LINE_USER_ID")
+
+def send_line_message_to_self(message: str):
+    try:
+        line_bot_api.push_message(LINE_USER_ID, TextSendMessage(text=message))
+        print("✅ LINE 訊息已送出")
+    except Exception as e:
+        print("❌ LINE 訊息發送失敗：", e)
+
 
 def write_summary_to_docx(summary, output_path, original_filename=None):
     doc = Document()
@@ -607,6 +629,8 @@ def run_agent():
         write_summary_to_docx(summary, docx_path, original_filename=file_name)
         upload_file_to_folder(output_folder_id, docx_path, output_name)
         print(f"✅ 已完成並上傳報告：{output_name}")
+        send_line_message_to_self(f"✅ 分析完成：{output_name}")
+
 
     return {"message": "🎉 檔案處理完成"}
 
