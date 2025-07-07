@@ -448,67 +448,78 @@
 
 import os
 import io
+import json
 import fitz  # PyMuPDF
 import docx
-import json
 import requests
-from datetime import datetime, timedelta
-from dateutil.parser import parse as parse_date  # pip install python-dateutil
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Request
 from docx import Document
-from docx.shared import Pt
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload, MediaFileUpload
 from starlette.responses import Response
-from dateutil.parser import parse as parse_date
-from datetime import datetime, timedelta, timezone
 from linebot import LineBotApi
 from linebot.models import TextSendMessage
 import google.generativeai as genai
+from dateutil.parser import parse as parse_date
+
+# ✅ FastAPI 應用初始化
+app = FastAPI()
 
 # ✅ 環境變數
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 SERVICE_ACCOUNT_INFO = json.loads(os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON"))
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_USER_ID = os.getenv("LINE_USER_ID")
+
 INPUT_FOLDER_NAME = "spec-inbox"
 OUTPUT_FOLDER_NAME = "spec-outbox"
 TEMP_FOLDER = "temp"
 
-# ✅ 初始化 Gemini 與 Google Drive API
+# ✅ 初始化 Gemini & LINE & Google Drive
 genai.configure(api_key=GEMINI_API_KEY)
 gemini = genai.GenerativeModel("gemini-2.0-flash")
+line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 credentials = service_account.Credentials.from_service_account_info(SERVICE_ACCOUNT_INFO, scopes=SCOPES)
 drive_service = build("drive", "v3", credentials=credentials)
 
-# ✅ Google Drive 工具函式
+# ✅ LINE 訊息通知
+def send_line_message_to_self(message: str):
+    try:
+        line_bot_api.push_message(LINE_USER_ID, TextSendMessage(text=message))
+        print("✅ LINE 訊息已送出")
+    except Exception as e:
+        print("❌ LINE 訊息發送失敗：", e)
+
+# ✅ Google Drive 工具
 def get_folder_id_by_name(folder_name):
     results = drive_service.files().list(
         q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'",
-        spaces="drive", fields="files(id, name)"
+        fields="files(id, name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True
     ).execute()
     items = results.get("files", [])
     return items[0]["id"] if items else None
 
 def list_new_files_in_folder(folder_id, minutes=3):
-    """取得最近 N 分鐘內上傳的新檔案"""
     cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
     results = drive_service.files().list(
         q=f"'{folder_id}' in parents and (mimeType='application/pdf' or mimeType='application/vnd.openxmlformats-officedocument.wordprocessingml.document' or mimeType='text/plain')",
         fields="files(id, name, mimeType, createdTime)"
     ).execute()
-    files = results.get("files", [])
-    
     return [
-        f for f in files
+        f for f in results.get("files", [])
         if parse_date(f["createdTime"]) > cutoff
     ]
 
 def list_files_in_folder(folder_id):
     results = drive_service.files().list(
         q=f"'{folder_id}' in parents",
-        fields="files(id, name, mimeType)",
+        fields="files(id, name, mimeType)"
     ).execute()
     return results.get("files", [])
 
@@ -548,17 +559,21 @@ def analyze_text_with_gemini(text, chunk_size=8000):
         return "⚠️ 無法從文件中擷取任何內容，請確認格式或重新上傳。"
 
     chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
-    print(f"📚 總共分成 {len(chunks)} 段，每段 {chunk_size} 字")
+    print(f"📚 總共分成 {len(chunks)} 段")
 
     full_response = []
     for i, chunk in enumerate(chunks, 1):
-        prompt = f"""你是一位資深系統分析師，請針對以下規格文件片段進行風險審查：
-        --- 第 {i} 段 ---{chunk}---
-        請條列三類事項（繁體中文）：
-        1. 🔺 潛在風險
-        2. 💡 建議調整
-        3. ❓ 需補充釐清
-        """
+        prompt = f"""你是一位資深系統分析師，請針對以下文件片段進行風險審查：
+
+--- 第 {i} 段 ---
+{chunk}
+---
+
+請條列三類事項（繁體中文）：
+1. 🔺 潛在風險
+2. 💡 建議調整
+3. ❓ 需補充釐清
+"""
         print(f"🧠 分析第 {i} 段...")
         try:
             result = gemini.generate_content(prompt)
@@ -568,19 +583,7 @@ def analyze_text_with_gemini(text, chunk_size=8000):
 
     return "\n\n".join(full_response)
 
-
-
-line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-LINE_USER_ID = os.getenv("LINE_USER_ID")
-
-def send_line_message_to_self(message: str):
-    try:
-        line_bot_api.push_message(LINE_USER_ID, TextSendMessage(text=message))
-        print("✅ LINE 訊息已送出")
-    except Exception as e:
-        print("❌ LINE 訊息發送失敗：", e)
-
-
+# ✅ 輸出報告
 def write_summary_to_docx(summary, output_path, original_filename=None):
     doc = Document()
     doc.add_heading('系統規格風險分析報告', level=1)
@@ -596,7 +599,7 @@ def upload_file_to_folder(folder_id, local_path, file_name):
     media = MediaFileUpload(local_path, resumable=True)
     drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
 
-# ✅ 核心 API
+# ✅ webhook 主處理邏輯
 @app.post("/webhook")
 def run_agent():
     input_folder_id = get_folder_id_by_name(INPUT_FOLDER_NAME)
@@ -606,12 +609,10 @@ def run_agent():
 
     files = list_new_files_in_folder(input_folder_id, minutes=3)
     existing_outputs = [f["name"] for f in list_files_in_folder(output_folder_id)]
-
     os.makedirs(TEMP_FOLDER, exist_ok=True)
 
     for file in files:
         file_name = file["name"]
-
         if file_name.startswith("報告_") or not file_name.endswith((".pdf", ".docx", ".txt")):
             print(f"⏩ 跳過檔案：{file_name}")
             continue
@@ -631,11 +632,4 @@ def run_agent():
         print(f"✅ 已完成並上傳報告：{output_name}")
         send_line_message_to_self(f"✅ 分析完成：{output_name}")
 
-
-    return {"message": "🎉 檔案處理完成"}
-
-@app.post("/google-drive-webhook")
-async def google_drive_webhook(request: Request):
-    print("📬 收到 Google Drive Webhook 通知")
-    result = run_agent()
-    return Response(status_code=200)
+    return {"message": "🎉 所有檔案處理完成"}
