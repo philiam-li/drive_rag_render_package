@@ -597,8 +597,13 @@ def write_summary_to_docx(summary, output_path, original_filename=None):
 def upload_file_to_folder(folder_id, local_path, file_name):
     file_metadata = {"name": file_name, "parents": [folder_id]}
     media = MediaFileUpload(local_path, resumable=True)
-    drive_service.files().create(body=file_metadata, media_body=media, fields="id").execute()
-
+    drive_service.files().create(
+        body=file_metadata,
+        media_body=media,
+        fields="id",
+        supportsAllDrives=True  # ✅ 加這行，支援共用雲端硬碟
+    ).execute()
+    
 # ✅ webhook 主處理邏輯
 @app.post("/webhook")
 def run_agent():
