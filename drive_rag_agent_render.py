@@ -498,9 +498,7 @@ def send_line_message_to_self(message: str):
 def get_folder_id_by_name(folder_name):
     results = drive_service.files().list(
         q=f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder'",
-        fields="files(id, name)",
-        supportsAllDrives=True,
-        includeItemsFromAllDrives=True
+        fields="files(id, name)"
     ).execute()
     items = results.get("files", [])
     return items[0]["id"] if items else None
@@ -593,17 +591,17 @@ def write_summary_to_docx(summary, output_path, original_filename=None):
     for line in summary.splitlines():
         doc.add_paragraph(line, style='List Bullet')
     doc.save(output_path)
-
+    
 def upload_file_to_folder(folder_id, local_path, file_name):
     file_metadata = {"name": file_name, "parents": [folder_id]}
-    media = MediaFileUpload(local_path, resumable=True)
+    media = MediaFileUpload(local_path, resumable=False)  # 改成 simple upload
     drive_service.files().create(
         body=file_metadata,
         media_body=media,
         fields="id",
-        supportsAllDrives=True  # ✅ 加這行，支援共用雲端硬碟
+        supportsAllDrives=False  # 明確說這不是共用雲端硬碟
     ).execute()
-    
+
 # ✅ webhook 主處理邏輯
 @app.post("/webhook")
 def run_agent():
